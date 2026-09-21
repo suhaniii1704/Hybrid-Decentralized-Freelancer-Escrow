@@ -1,0 +1,35 @@
+# deps
+node_modules/
+venv/
+__pycache__/
+*.pyc
+
+# env
+.env
+.env.local
+!.env.example
+
+# build
+dist/
+build/
+.vite/
+
+# keys
+*.key
+*.pem
+keys.json
+*-keys.json
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+
+# logs
+*.log
+npm-debug.log*
+
+# titanoboa / pytest
+.pytest_cache/
+.hypothesis/
