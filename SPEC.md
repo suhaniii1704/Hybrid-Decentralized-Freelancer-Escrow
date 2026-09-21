@@ -272,7 +272,7 @@ The contract must verify the return value of the USDC transfer operation.
 | Preconditions  | Milestone is `SUBMITTED`; review period has not expired according to the specified boundary rules                                |
 | Effect         | Changes state to `RELEASED`; transfers the milestone amount to the freelancer                                                    |
 | Token movement | Escrow → Freelancer                                                                                                              |
-| Event          | `MilestoneApproved` and/or `MilestoneReleased`, according to the final event definition                                          |
+| Event          | `MilestoneApproved` followed by `MilestoneReleased`                                          |
 | Reverts        | Invalid milestone index; caller is not client; milestone is not `SUBMITTED`; approval is not permitted after the review deadline |
 
 State must be updated before the token transfer.
@@ -457,6 +457,45 @@ The implementation may expose additional read-only values required by the fronte
 
 No write function may modify these immutable job-level values.
 
+## 2.6 Factory Job-Creation Interface
+
+Jobs are created through `EscrowFactory`.
+
+### `create_job(freelancer, arbitrator, spec_uri, milestone_amounts, due_dates)`
+
+| Field | Specification |
+|---|---|
+| Caller | Client (`msg.sender`) |
+| Parameters | Freelancer address, arbitrator address, specification URI, milestone amounts, milestone due dates |
+| Client | Set to `msg.sender` |
+| Payment token | Factory's immutable configured token |
+| Review period | Fixed at 7 days |
+| Appeal window | Fixed at 7 days |
+| Milestones | At least 1 and at most 20 |
+| Amounts | Every milestone amount must be greater than zero |
+| Due dates | Exactly one due date per milestone |
+| Effect | Creates a new `EscrowJob` with the supplied job configuration |
+| Event | `JobCreated` |
+| Reverts | Invalid array lengths; zero milestone amount; more than 20 milestones; zero address; arbitrator equals client; arbitrator equals freelancer |
+
+The factory must reject an empty milestone list.
+
+The factory must reject a milestone list containing more than 20 milestones.
+
+The `milestone_amounts` and `due_dates` arrays must have equal lengths.
+
+The factory must reject a zero freelancer or arbitrator address.
+
+The factory must reject an arbitrator address equal to the client or freelancer.
+
+The factory's payment token is immutable and is passed to each newly created `EscrowJob`.
+
+The created job stores the client, freelancer, arbitrator, payment token, review period, appeal window, and specification URI as immutable job-level configuration.
+
+The factory must emit `JobCreated` once for every successfully created job.
+
+The `client` value in `JobCreated` must equal the transaction sender (`msg.sender`).
+
 # 3. Events
 
 Events are the contract's on-chain record of state transitions and important dispute actions.
@@ -485,7 +524,7 @@ JobCreated(
 | `client`     | address                                      |     Yes | Client address                              |
 | `freelancer` | address                                      |     Yes | Freelancer address                          |
 | `arbitrator` | address                                      |     Yes | Arbitrator address                          |
-| `spec_uri`   | String/bytes32-compatible URI representation |      No | IPFS URI of the immutable job specification |
+| `spec_uri`   | string                                       |      No | IPFS URI of the immutable job specification |
 
 The factory emits this event when a job is successfully created.
 
@@ -545,7 +584,7 @@ MilestoneApproved(
 | `milestone_index` | uint256 |     Yes | Milestone index                |
 | `actor`           | address |     Yes | Client approving the milestone |
 
-The approval causes the milestone to enter `RELEASED`.
+The approval causes the milestone to enter `RELEASED`. `MilestoneApproved` and `MilestoneReleased` are emitted as separate events in that order.
 
 ## 3.5 `MilestoneReleased`
 
@@ -578,7 +617,7 @@ RULING
 SECONDARY_RULING
 ```
 
-The exact ABI representation of the reason will be finalized before the ABI draft.
+The ABI representation of `reason` is `uint8`.
 
 ## 3.6 `MilestoneRefunded`
 
@@ -860,10 +899,8 @@ The following bounds apply to the protocol.
 | Minimum milestone amount           | Greater than 0                       |
 | Confidence range                   | 0–100                                |
 | High-confidence threshold          | 70                                   |
-| Minimum review period              | Approximately 60 seconds             |
-| Minimum appeal window              | Approximately 60 seconds             |
-| Maximum review period              | 7 days                               |
-| Maximum appeal window              | 7 days                               |
+| Review period                      | 7 days                               |
+| Appeal window                      | 7 days                               |
 | Evidence per party per milestone   | 3 per party                          |
 | Job client address                 | Non-zero                             |
 | Freelancer address                 | Non-zero                             |
@@ -914,15 +951,11 @@ The review period is fixed at **7 days**.
 The review deadline is calculated from the timestamp at which the milestone
 enters `SUBMITTED`.
 
-The review period must not be shorter than the protocol minimum of 60 seconds.
-
 ### 4.1.5 Appeal Window
 
 The appeal window is fixed at **7 days**.
 
 The appeal window begins when an appealable primary ruling is submitted.
-
-The appeal window must not be shorter than the protocol minimum of 60 seconds.
 
 ### 4.1.6 Addresses
 
@@ -949,6 +982,12 @@ additional submissions once that party has reached the cap.
 
 Evidence content itself is not stored in contract storage. Evidence references
 are emitted through events.
+
+## 4.1.8 URI Representation
+
+Contract URI fields use the Solidity/Vyper ABI `string` type.
+
+This applies to `spec_uri`, `proof_uri`, `evidence_uri`, and `reasoning_uri`.
 
 # 4.2 Job Specification JSON
 
@@ -1176,6 +1215,8 @@ The current proposed fallback is:
 
 The exact implementation must be approved by all four teammates before the contract is finalized.
 
+The ruling deadline duration is not yet fixed in this specification and must be defined before ABI freeze and contract implementation.
+
 The fallback must not be callable before the ruling deadline.
 
 Once the fallback resolves the escrow, the dispute cannot later be ruled or finalized by the arbitrator.
@@ -1196,13 +1237,13 @@ Instead:
 * the event includes the on-chain actor;
 * the contract maintains the required per-party evidence count.
 
-The same model applies to the initial evidence attached to `DisputeRaised`.
+The same model applies to the initial evidence attached to `DisputeRaised`: the initial evidence counts as one evidence submission for the party that raised the dispute.
 
 ### Evidence Cap
 
 Each party has a maximum number of evidence submissions per milestone.
 
-The exact numerical cap is a pending team decision and must be fixed before ABI freeze.
+The numerical cap is fixed at **3 evidence submissions per party per milestone**.
 
 The cap exists to prevent unbounded evidence growth and excessive arbitrator input.
 
@@ -1449,7 +1490,7 @@ The implementation must not introduce behavior that is not represented by the sp
 * a valid arbitrator address;
 * valid milestone amounts;
 * a valid specification URI;
-* valid review and appeal periods.
+* the protocol-fixed 7-day review period and 7-day appeal window.
 
 **When**
 
@@ -1458,7 +1499,7 @@ The implementation must not introduce behavior that is not represented by the sp
 **Then**
 
 * a new escrow job is created;
-* the client, freelancer, arbitrator, token and periods are fixed;
+* the client, freelancer, arbitrator, token, 7-day review period, and 7-day appeal window are fixed;
 * `JobCreated` is emitted;
 * the event contains the job address, client, freelancer, arbitrator and `spec_uri`.
 
