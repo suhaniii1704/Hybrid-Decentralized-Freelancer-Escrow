@@ -393,22 +393,24 @@ A winning party cannot appeal.
 
 State must be updated before the token transfer.
 
-## 2.4 Ruling-Deadline Fallback
+### 2.4 Ruling-Deadline Fallback
 
 ### `trigger_ruling_deadline_fallback(milestone_index)`
 
-| Field          | Specification                                                                                                   |
-| -------------- | --------------------------------------------------------------------------------------------------------------- |
-| Caller         | Anyone                                                                                                          |
-| Preconditions  | Milestone is `DISPUTED`; arbitrator has not submitted the required ruling before the ruling deadline            |
-| Effect         | Resolves the dispute according to the team-approved ruling-deadline fallback                                    |
-| Token movement | Determined by the final team-approved fallback rule                                                             |
-| Event          | `RulingDeadlineFallback` and the resulting resolution event                                                     |
-| Reverts        | Invalid milestone index; milestone is not `DISPUTED`; ruling deadline has not expired; ruling already submitted |
+| Field | Specification |
+|---|---|
+| Caller | Anyone |
+| Preconditions | Milestone is `DISPUTED`; arbitrator has not submitted the required ruling before the ruling deadline |
+| Effect | Resolves the dispute using the 50/50 fallback |
+| Token movement | 50% of the escrowed amount → Client; 50% → Freelancer |
+| Event | `RulingDeadlineFallback` and the resulting resolution event |
+| Reverts | Invalid milestone index; milestone is not `DISPUTED`; ruling deadline has not expired; ruling already submitted |
 
-**Pending team decision:** The exact distribution of the escrowed amount under the ruling-deadline fallback must be approved by all four teammates before implementation.
+The fallback distribution is:
 
-The current product proposal is a 50/50 split between client and freelancer after the arbitrator's ruling deadline expires.
+```text
+50% → Client
+50% → Freelancer
 
 ## 2.5 Read Views
 
@@ -860,9 +862,9 @@ The following bounds apply to the protocol.
 | High-confidence threshold          | 70                                   |
 | Minimum review period              | Approximately 60 seconds             |
 | Minimum appeal window              | Approximately 60 seconds             |
-| Maximum review period              | Must be explicitly bounded           |
-| Maximum appeal window              | Must be explicitly bounded           |
-| Evidence per party per milestone   | Capped                               |
+| Maximum review period              | 7 days                               |
+| Maximum appeal window              | 7 days                               |
+| Evidence per party per milestone   | 3 per party                          |
 | Job client address                 | Non-zero                             |
 | Freelancer address                 | Non-zero                             |
 | Arbitrator address                 | Non-zero                             |
@@ -907,23 +909,20 @@ The threshold is therefore inclusive at 70.
 
 ### 4.1.4 Review Period
 
-The review period must satisfy the protocol's minimum and maximum bounds.
+The review period is fixed at **7 days**.
 
-The minimum is approximately **60 seconds**.
+The review deadline is calculated from the timestamp at which the milestone
+enters `SUBMITTED`.
 
-The exact maximum must be fixed before implementation and ABI freeze.
-
-The review deadline is calculated from the timestamp at which the milestone enters `SUBMITTED`.
+The review period must not be shorter than the protocol minimum of 60 seconds.
 
 ### 4.1.5 Appeal Window
 
-The appeal window must satisfy the protocol's minimum and maximum bounds.
-
-The minimum is approximately **60 seconds**.
-
-The exact maximum must be fixed before implementation and ABI freeze.
+The appeal window is fixed at **7 days**.
 
 The appeal window begins when an appealable primary ruling is submitted.
+
+The appeal window must not be shorter than the protocol minimum of 60 seconds.
 
 ### 4.1.6 Addresses
 
@@ -941,18 +940,15 @@ The factory must reject:
 arbitrator == client
 arbitrator == freelancer
 ```
-
 ### 4.1.7 Evidence Cap
 
-Each party has a maximum number of evidence submissions per milestone.
+Each party may submit a maximum of **3 evidence submissions per milestone**.
 
-The contract tracks the number of evidence submissions by party and rejects additional submissions once that party's cap is reached.
+The contract tracks the number of evidence submissions by party and rejects
+additional submissions once that party has reached the cap.
 
-The exact numeric cap must be fixed before implementation and ABI freeze.
-
-Evidence content itself is not stored in contract storage. Evidence references are emitted through events.
-
----
+Evidence content itself is not stored in contract storage. Evidence references
+are emitted through events.
 
 # 4.2 Job Specification JSON
 
