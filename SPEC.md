@@ -1,9 +1,11 @@
 # Freelancer Escrow Protocol Specification
 
-**Status:** Phase 0 draft
+**Status:** Phase 0 draft — 5-day scope
 **Network:** Base Sepolia
 **Contract language:** Vyper 0.4.3
 **Payment token:** USDC (6 decimals)
+
+> **5-day scope note:** This specification intentionally excludes a job factory, a separate evidence-submission subsystem, and any ruling-deadline fallback. Evidence is limited to the single `proof_uri` supplied with milestone submission and the single `evidence_uri` supplied when a dispute is raised.
 
 ## 1. State Machine
 
@@ -11,7 +13,7 @@
 
 The protocol has four relevant actors:
 
-* **Client** — creates a job and funds milestones. The client can approve submitted work, cancel eligible milestones, and participate in disputes.
+* **Client** — funds milestones. The client can approve submitted work, cancel eligible milestones, and participate in disputes.
 * **Freelancer** — performs the milestone work and submits proof. The freelancer can claim eligible payments after the review timeout and participate in disputes.
 * **Arbitrator** — submits primary and secondary dispute rulings.
 * **Anyone** — may trigger permissionless actions whose only purpose is to finalize an already-determined state, including timeout claims and ruling finalization where the applicable conditions are satisfied.
@@ -84,7 +86,7 @@ DISPUTED
    └──────────────────────> REFUNDED
 ```
 
-The exact ruling, appeal, secondary-review, finalization, and ruling-deadline-fallback transitions are specified in the dispute lifecycle section below.
+The exact ruling, appeal, secondary-review, and finalization transitions are specified in the dispute lifecycle section below.
 
 ### 1.4 Transition Rules
 
@@ -206,15 +208,7 @@ A low-confidence primary ruling (`confidence < 70`) proceeds directly to seconda
 
 The exact deadline boundary and finalization conditions are defined in the deadlines section.
 
-### 1.8 Ruling-Deadline Fallback
-
-If the arbitrator does not submit the required ruling before the ruling deadline, the milestone must not remain locked indefinitely.
-
-The protocol provides a ruling-deadline fallback that allows the escrowed amount to be resolved through the specified fallback outcome.
-
-The exact trigger, caller, timing boundary, and fund distribution are a protocol-level design decision and must be agreed upon by all four teammates before the contract implementation is finalized.
-
-### 1.9 Deadline Boundary Convention
+### 1.8 Deadline Boundary Convention
 
 All deadline comparisons must use explicitly defined inequalities.
 
@@ -272,7 +266,7 @@ The contract must verify the return value of the USDC transfer operation.
 | Preconditions  | Milestone is `SUBMITTED`; review period has not expired according to the specified boundary rules                                |
 | Effect         | Changes state to `RELEASED`; transfers the milestone amount to the freelancer                                                    |
 | Token movement | Escrow → Freelancer                                                                                                              |
-| Event          | `MilestoneApproved` followed by `MilestoneReleased`                                          |
+| Event          | `MilestoneApproved` and/or `MilestoneReleased`, according to the final event definition                                          |
 | Reverts        | Invalid milestone index; caller is not client; milestone is not `SUBMITTED`; approval is not permitted after the review deadline |
 
 State must be updated before the token transfer.
@@ -305,7 +299,7 @@ State must be updated before the token transfer.
 
 State must be updated before any token transfer.
 
-## 2.2 Dispute and Evidence Functions
+## 2.2 Dispute Functions
 
 ### `raise_dispute(milestone_index, evidence_uri)`
 
@@ -316,22 +310,9 @@ State must be updated before any token transfer.
 | Effect         | Changes milestone state to `DISPUTED`; records the dispute initiator and initial evidence reference                         |
 | Token movement | None                                                                                                                        |
 | Event          | `DisputeRaised` including the actor address                                                                                 |
-| Reverts        | Invalid milestone index; caller is neither client nor freelancer; milestone is not `SUBMITTED`; evidence cap/rules violated |
+| Reverts        | Invalid milestone index; caller is neither client nor freelancer; milestone is not `SUBMITTED`; invalid evidence URI |
 
 The event actor must be the actual `msg.sender`.
-
-### `submit_evidence(milestone_index, evidence_uri)`
-
-| Field          | Specification                                                                                                  |
-| -------------- | -------------------------------------------------------------------------------------------------------------- |
-| Caller         | Client or Freelancer                                                                                           |
-| Preconditions  | Milestone is `DISPUTED`; caller is one of the two job parties; caller has not exceeded the evidence cap        |
-| Effect         | Records the evidence submission according to the event-log evidence design                                     |
-| Token movement | None                                                                                                           |
-| Event          | `EvidenceSubmitted` including the actor address                                                                |
-| Reverts        | Invalid milestone index; caller is neither party; milestone is not `DISPUTED`; per-party evidence cap exceeded |
-
-Evidence content is not stored as full on-chain text. The contract records the evidence reference through events and maintains only the required counts/state.
 
 ## 2.3 Ruling Functions
 
@@ -393,26 +374,7 @@ A winning party cannot appeal.
 
 State must be updated before the token transfer.
 
-### 2.4 Ruling-Deadline Fallback
-
-### `trigger_ruling_deadline_fallback(milestone_index)`
-
-| Field | Specification |
-|---|---|
-| Caller | Anyone |
-| Preconditions | Milestone is `DISPUTED`; arbitrator has not submitted the required ruling before the ruling deadline |
-| Effect | Resolves the dispute using the 50/50 fallback |
-| Token movement | 50% of the escrowed amount → Client; 50% → Freelancer |
-| Event | `RulingDeadlineFallback` and the resulting resolution event |
-| Reverts | Invalid milestone index; milestone is not `DISPUTED`; ruling deadline has not expired; ruling already submitted |
-
-The fallback distribution is:
-
-```text
-50% → Client
-50% → Freelancer
-
-## 2.5 Read Views
+## 2.4 Read Views
 
 The contract must provide read-only functions for frontend, adapter, indexer, and testing purposes.
 
@@ -457,45 +419,6 @@ The implementation may expose additional read-only values required by the fronte
 
 No write function may modify these immutable job-level values.
 
-## 2.6 Factory Job-Creation Interface
-
-Jobs are created through `EscrowFactory`.
-
-### `create_job(freelancer, arbitrator, spec_uri, milestone_amounts, due_dates)`
-
-| Field | Specification |
-|---|---|
-| Caller | Client (`msg.sender`) |
-| Parameters | Freelancer address, arbitrator address, specification URI, milestone amounts, milestone due dates |
-| Client | Set to `msg.sender` |
-| Payment token | Factory's immutable configured token |
-| Review period | Fixed at 7 days |
-| Appeal window | Fixed at 7 days |
-| Milestones | At least 1 and at most 20 |
-| Amounts | Every milestone amount must be greater than zero |
-| Due dates | Exactly one due date per milestone |
-| Effect | Creates a new `EscrowJob` with the supplied job configuration |
-| Event | `JobCreated` |
-| Reverts | Invalid array lengths; zero milestone amount; more than 20 milestones; zero address; arbitrator equals client; arbitrator equals freelancer |
-
-The factory must reject an empty milestone list.
-
-The factory must reject a milestone list containing more than 20 milestones.
-
-The `milestone_amounts` and `due_dates` arrays must have equal lengths.
-
-The factory must reject a zero freelancer or arbitrator address.
-
-The factory must reject an arbitrator address equal to the client or freelancer.
-
-The factory's payment token is immutable and is passed to each newly created `EscrowJob`.
-
-The created job stores the client, freelancer, arbitrator, payment token, review period, appeal window, and specification URI as immutable job-level configuration.
-
-The factory must emit `JobCreated` once for every successfully created job.
-
-The `client` value in `JobCreated` must equal the transaction sender (`msg.sender`).
-
 # 3. Events
 
 Events are the contract's on-chain record of state transitions and important dispute actions.
@@ -504,31 +427,7 @@ Every event that identifies an actor must include the actor address explicitly i
 
 The final ABI will use these event definitions as its source.
 
-## 3.1 `JobCreated`
-
-Emitted once when an `EscrowJob` is created by the factory.
-
-```text
-JobCreated(
-    job,
-    client,
-    freelancer,
-    arbitrator,
-    spec_uri
-)
-```
-
-| Argument     | Type                                         | Indexed | Description                                 |
-| ------------ | -------------------------------------------- | ------: | ------------------------------------------- |
-| `job`        | address                                      |      No | Address of the newly created escrow job     |
-| `client`     | address                                      |     Yes | Client address                              |
-| `freelancer` | address                                      |     Yes | Freelancer address                          |
-| `arbitrator` | address                                      |     Yes | Arbitrator address                          |
-| `spec_uri`   | string                                       |      No | IPFS URI of the immutable job specification |
-
-The factory emits this event when a job is successfully created.
-
-## 3.2 `MilestoneFunded`
+## 3.1 `MilestoneFunded`
 
 Emitted when a milestone changes from `PENDING` to `FUNDED`.
 
@@ -548,7 +447,7 @@ MilestoneFunded(
 
 `actor` must equal the transaction sender.
 
-## 3.3 `MilestoneSubmitted`
+## 3.2 `MilestoneSubmitted`
 
 Emitted when a milestone changes from `FUNDED` to `SUBMITTED`.
 
@@ -568,7 +467,7 @@ MilestoneSubmitted(
 
 `actor` must equal the transaction sender.
 
-## 3.4 `MilestoneApproved`
+## 3.3 `MilestoneApproved`
 
 Emitted when the client explicitly approves a submitted milestone.
 
@@ -584,9 +483,9 @@ MilestoneApproved(
 | `milestone_index` | uint256 |     Yes | Milestone index                |
 | `actor`           | address |     Yes | Client approving the milestone |
 
-The approval causes the milestone to enter `RELEASED`. `MilestoneApproved` and `MilestoneReleased` are emitted as separate events in that order.
+The approval causes the milestone to enter `RELEASED`.
 
-## 3.5 `MilestoneReleased`
+## 3.4 `MilestoneReleased`
 
 Emitted whenever a milestone reaches `RELEASED`.
 
@@ -617,9 +516,9 @@ RULING
 SECONDARY_RULING
 ```
 
-The ABI representation of `reason` is `uint8`.
+The exact ABI representation of the reason will be finalized before the ABI draft.
 
-## 3.6 `MilestoneRefunded`
+## 3.5 `MilestoneRefunded`
 
 Emitted whenever milestone funds are returned to the client.
 
@@ -641,7 +540,7 @@ MilestoneRefunded(
 | `amount`          | uint256                     |      No | Refunded amount                   |
 | `reason`          | uint8/enum-compatible value |      No | Reason for refund                 |
 
-## 3.7 `MilestoneCancelled`
+## 3.6 `MilestoneCancelled`
 
 Emitted when a milestone changes to `CANCELLED`.
 
@@ -659,7 +558,7 @@ MilestoneCancelled(
 
 If the milestone was already funded, the cancellation also results in the appropriate refund event.
 
-## 3.8 `DisputeRaised`
+## 3.7 `DisputeRaised`
 
 Emitted when a `SUBMITTED` milestone changes to `DISPUTED`.
 
@@ -681,29 +580,7 @@ The `actor` field is mandatory because the arbitrator and indexer must identify 
 
 The actor must equal `msg.sender`.
 
-## 3.9 `EvidenceSubmitted`
-
-Emitted whenever a party submits additional evidence for a disputed milestone.
-
-```text
-EvidenceSubmitted(
-    milestone_index,
-    actor,
-    evidence_uri
-)
-```
-
-| Argument          | Type    | Indexed | Description               |
-| ----------------- | ------- | ------: | ------------------------- |
-| `milestone_index` | uint256 |     Yes | Disputed milestone        |
-| `actor`           | address |     Yes | Party submitting evidence |
-| `evidence_uri`    | string  |      No | URI of the evidence JSON  |
-
-The actor must equal `msg.sender`.
-
-The contract maintains the required per-party evidence count. Evidence content itself is stored off-chain, with the URI recorded in the event.
-
-## 3.10 `RulingSubmitted`
+## 3.8 `RulingSubmitted`
 
 Emitted when the arbitrator submits the primary ruling.
 
@@ -727,7 +604,7 @@ RulingSubmitted(
 
 The contract verifies that `actor == arbitrator`.
 
-## 3.11 `RulingAppealed`
+## 3.9 `RulingAppealed`
 
 Emitted when the losing party appeals an eligible primary ruling.
 
@@ -745,7 +622,7 @@ RulingAppealed(
 
 The contract verifies that the actor is the losing party from the primary ruling.
 
-## 3.12 `SecondaryRulingSubmitted`
+## 3.10 `SecondaryRulingSubmitted`
 
 Emitted when the arbitrator submits the secondary ruling.
 
@@ -767,7 +644,7 @@ SecondaryRulingSubmitted(
 
 The contract verifies that `actor == arbitrator`.
 
-## 3.13 `RulingFinalized`
+## 3.11 `RulingFinalized`
 
 Emitted when the final dispute outcome is applied to the milestone.
 
@@ -796,29 +673,7 @@ winner == freelancer → RELEASED
 winner == client     → REFUNDED
 ```
 
-## 3.14 `RulingDeadlineFallback`
-
-Emitted when the arbitrator fails to submit the required ruling before the ruling deadline and the fallback mechanism is triggered.
-
-```text
-RulingDeadlineFallback(
-    milestone_index,
-    actor,
-    client_amount,
-    freelancer_amount
-)
-```
-
-| Argument            | Type    | Indexed | Description                     |
-| ------------------- | ------- | ------: | ------------------------------- |
-| `milestone_index`   | uint256 |     Yes | Disputed milestone              |
-| `actor`             | address |     Yes | Address triggering the fallback |
-| `client_amount`     | uint256 |      No | Amount returned to client       |
-| `freelancer_amount` | uint256 |      No | Amount released to freelancer   |
-
-The fallback distribution remains subject to the team's pending product decision.
-
-## 3.15 Event Actor Rules
+## 3.12 Event Actor Rules
 
 The following rules apply to all events containing an actor:
 
@@ -828,15 +683,13 @@ The following rules apply to all events containing an actor:
 4. The actor MUST NOT be inferred from the event's other fields.
 5. Off-chain services must use the on-chain actor when labeling statements, claims, evidence, and actions.
 
-This is particularly important for `DisputeRaised` and `EvidenceSubmitted`.
+This is particularly important for `DisputeRaised`.
 
-## 3.16 Event Ordering
+## 3.13 Event Ordering
 
 For a normal milestone lifecycle, the expected event sequence is:
 
 ```text
-JobCreated
-    ↓
 MilestoneFunded
     ↓
 MilestoneSubmitted
@@ -849,8 +702,6 @@ MilestoneReleased
 For a timeout release:
 
 ```text
-JobCreated
-    ↓
 MilestoneFunded
     ↓
 MilestoneSubmitted
@@ -861,15 +712,11 @@ MilestoneReleased
 For a dispute:
 
 ```text
-JobCreated
-    ↓
 MilestoneFunded
     ↓
 MilestoneSubmitted
     ↓
 DisputeRaised
-    ↓
-EvidenceSubmitted*
     ↓
 RulingSubmitted
     ↓
@@ -886,7 +733,6 @@ MilestoneReleased / MilestoneRefunded
 
 The indexer must preserve the transaction/log ordering when constructing the event timeline.
 
-
 # 4. Bounds and JSON Formats
 
 ## 4.1 Protocol Bounds
@@ -899,9 +745,10 @@ The following bounds apply to the protocol.
 | Minimum milestone amount           | Greater than 0                       |
 | Confidence range                   | 0–100                                |
 | High-confidence threshold          | 70                                   |
-| Review period                      | 7 days                               |
-| Appeal window                      | 7 days                               |
-| Evidence per party per milestone   | 3 per party                          |
+| Minimum review period              | Approximately 60 seconds             |
+| Minimum appeal window              | Approximately 60 seconds             |
+| Maximum review period              | 7 days                               |
+| Maximum appeal window              | 7 days                               |
 | Job client address                 | Non-zero                             |
 | Freelancer address                 | Non-zero                             |
 | Arbitrator address                 | Non-zero                             |
@@ -951,11 +798,15 @@ The review period is fixed at **7 days**.
 The review deadline is calculated from the timestamp at which the milestone
 enters `SUBMITTED`.
 
+The review period must not be shorter than the protocol minimum of 60 seconds.
+
 ### 4.1.5 Appeal Window
 
 The appeal window is fixed at **7 days**.
 
 The appeal window begins when an appealable primary ruling is submitted.
+
+The appeal window must not be shorter than the protocol minimum of 60 seconds.
 
 ### 4.1.6 Addresses
 
@@ -965,30 +816,14 @@ The following addresses must not be the zero address:
 * freelancer;
 * arbitrator;
 * payment token;
-* factory-created job where applicable.
+* job deployment where applicable.
 
-The factory must reject:
+Job deployment must reject:
 
 ```text
 arbitrator == client
 arbitrator == freelancer
 ```
-### 4.1.7 Evidence Cap
-
-Each party may submit a maximum of **3 evidence submissions per milestone**.
-
-The contract tracks the number of evidence submissions by party and rejects
-additional submissions once that party has reached the cap.
-
-Evidence content itself is not stored in contract storage. Evidence references
-are emitted through events.
-
-## 4.1.8 URI Representation
-
-Contract URI fields use the Solidity/Vyper ABI `string` type.
-
-This applies to `spec_uri`, `proof_uri`, `evidence_uri`, and `reasoning_uri`.
-
 # 4.2 Job Specification JSON
 
 The job specification is stored off-chain, pinned to IPFS, and referenced by the immutable `spec_uri`.
@@ -1055,56 +890,7 @@ The acceptance criteria are used by the arbitrator when evaluating a dispute.
 
 ---
 
-# 4.3 Evidence JSON
-
-Evidence is stored off-chain and referenced from the contract through an IPFS URI.
-
-The canonical evidence structure is:
-
-```json
-{
-  "statement": "The requested feature was completed and submitted before the deadline.",
-  "attachments": [
-    {
-      "name": "proof.png",
-      "uri": "ipfs://example",
-      "mimeType": "image/png"
-    }
-  ]
-}
-```
-
-## 4.3.1 Evidence Fields
-
-### `statement`
-
-Required string containing the party's claim or explanation.
-
-The statement is untrusted user-provided content.
-
-### `attachments`
-
-Array of zero or more attachment objects.
-
-### Attachment `name`
-
-Required string containing the attachment's display name.
-
-### Attachment `uri`
-
-Required URI identifying the stored attachment.
-
-### Attachment `mimeType`
-
-Required MIME type describing the attachment.
-
-Only supported MIME types should be accepted by the off-chain backend/arbitrator pipeline.
-
-The contract itself records the evidence URI and evidence count rather than parsing the JSON content.
-
----
-
-# 4.4 JSON Integrity Rules
+# 4.3 JSON Integrity Rules
 
 The smart contract does not trust JSON contents as authorization data.
 
@@ -1120,7 +906,7 @@ The arbitrator must label statements according to the on-chain sender of the cor
 
 ---
 
-# 4.5 Immutable Job Configuration
+# 4.4 Immutable Job Configuration
 
 The following values are fixed when the job is created:
 
@@ -1196,60 +982,7 @@ The secondary ruling does not create another appeal window.
 
 ---
 
-## 5.4 Arbitrator Ruling Deadline
-
-A dispute must not remain permanently locked because the arbitrator fails to act.
-
-The protocol therefore includes a ruling deadline.
-
-If the arbitrator has not submitted the required ruling before the deadline, any address may trigger the ruling-deadline fallback.
-
-### Pending Team Decision
-
-The current proposed fallback is:
-
-```text id="jkv6qp"
-50% → Client
-50% → Freelancer
-```
-
-The exact implementation must be approved by all four teammates before the contract is finalized.
-
-The ruling deadline duration is not yet fixed in this specification and must be defined before ABI freeze and contract implementation.
-
-The fallback must not be callable before the ruling deadline.
-
-Once the fallback resolves the escrow, the dispute cannot later be ruled or finalized by the arbitrator.
-
----
-
-## 5.5 Evidence Storage
-
-Evidence content is stored off-chain.
-
-The contract does not store complete evidence JSON or attachments in storage.
-
-Instead:
-
-* evidence JSON is pinned to IPFS;
-* the resulting URI is submitted to the contract;
-* the contract emits an `EvidenceSubmitted` event;
-* the event includes the on-chain actor;
-* the contract maintains the required per-party evidence count.
-
-The same model applies to the initial evidence attached to `DisputeRaised`: the initial evidence counts as one evidence submission for the party that raised the dispute.
-
-### Evidence Cap
-
-Each party has a maximum number of evidence submissions per milestone.
-
-The numerical cap is fixed at **3 evidence submissions per party per milestone**.
-
-The cap exists to prevent unbounded evidence growth and excessive arbitrator input.
-
----
-
-## 5.6 Deadline Boundaries
+## 5.4 Deadline Boundaries
 
 All deadlines use explicit timestamp comparisons.
 
@@ -1278,13 +1011,12 @@ The same explicit convention must be applied independently to:
 
 * review timeout;
 * appeal window;
-* ruling deadline.
 
 Tests must cover all three boundary positions.
 
 ---
 
-## 5.7 Immutable Configuration
+## 5.5 Immutable Configuration
 
 The following values cannot change after job creation:
 
@@ -1302,9 +1034,9 @@ There are no upgrade functions.
 
 ---
 
-## 5.8 Arbitrator Restrictions
+## 5.6 Arbitrator Restrictions
 
-The factory must reject a job where:
+Job deployment must reject a job where:
 
 ```text id="t2h6vf"
 arbitrator == client
@@ -1322,7 +1054,7 @@ This prevents a job party from simultaneously controlling the arbitrator role.
 
 ---
 
-## 5.9 USDC Transfer Safety
+## 5.7 USDC Transfer Safety
 
 Every operation that moves USDC must:
 
@@ -1338,7 +1070,7 @@ A failed transfer must leave the entire transaction reverted.
 
 ---
 
-# 5.10 Escrow Balance Invariant
+# 5.8 Escrow Balance Invariant
 
 At every valid observable contract state:
 
@@ -1382,11 +1114,11 @@ The released milestone contributes nothing to the escrow balance.
 
 ---
 
-# 5.11 Multi-Milestone Independence
+# 5.9 Multi-Milestone Independence
 
 Each milestone has an independent lifecycle.
 
-An action affecting milestone `i` must not accidentally modify the state, amount, deadline, proof, evidence, or dispute state of another milestone `j`.
+An action affecting milestone `i` must not accidentally modify the state, amount, deadline, proof, or dispute state of another milestone `j`.
 
 For any valid:
 
@@ -1398,7 +1130,7 @@ operations on milestone `i` must preserve the state of milestone `j`, except for
 
 ---
 
-# 5.12 One-Time Transitions
+# 5.10 One-Time Transitions
 
 Each milestone transition may occur only once.
 
@@ -1416,31 +1148,30 @@ Repeated calls must revert.
 
 ---
 
-# 5.13 Permissionless Finalization
+# 5.11 Permissionless Finalization
 
 Actions whose purpose is only to finalize an already-determined outcome may be permissionless.
 
 This includes:
 
 * `claim_after_timeout`;
-* `finalize_ruling`;
-* ruling-deadline fallback.
+* `finalize_ruling`.
 
 Permissionless execution prevents a party or arbitrator from permanently blocking an outcome after the required conditions have already been satisfied.
 
 ---
 
-# 5.14 No Unbounded Contract Loops
+# 5.12 No Unbounded Contract Loops
 
 Contract functions must not depend on loops whose execution grows without a fixed protocol bound.
 
 The maximum of 20 milestones provides a fixed upper bound for milestone-related operations.
 
-Evidence submission does not require iterating over all previous evidence because evidence is represented by event logs and per-party counters.
+Proof and dispute evidence are represented by bounded URI strings; contract functions must not iterate over unbounded off-chain content.
 
 ---
 
-# 5.15 Zero-Address Safety
+# 5.13 Zero-Address Safety
 
 The contract must reject zero addresses for:
 
@@ -1448,24 +1179,23 @@ The contract must reject zero addresses for:
 * freelancer;
 * arbitrator;
 * payment token;
-* factory-created job addresses where applicable.
+* job addresses where applicable.
 
 A valid party address must be a non-zero address.
 
 ---
 
-# 5.16 Supported Payment Token
+# 5.14 Supported Payment Token
 
 The escrow supports the configured USDC-like payment token only.
 
-The factory stores the token address as an immutable factory-level value.
+The EscrowJob stores the configured payment token address as an immutable job-level value.
 
 Fee-on-transfer tokens are outside the supported protocol model.
 
 The contract assumes that a successful transfer of `amount` transfers exactly `amount` token units.
 
 The `BadToken` test contract is used to verify failure handling when token transfers return failure or attempt a callback.
-
 
 # 6. Scenarios
 
@@ -1481,7 +1211,7 @@ The implementation must not introduce behavior that is not represented by the sp
 
 ## 6.1 Core Escrow Scenarios
 
-### SC-01 — Create a valid job
+### SC-01 — Deploy a valid EscrowJob
 
 **Given**
 
@@ -1490,37 +1220,36 @@ The implementation must not introduce behavior that is not represented by the sp
 * a valid arbitrator address;
 * valid milestone amounts;
 * a valid specification URI;
-* the protocol-fixed 7-day review period and 7-day appeal window.
+* valid review and appeal periods.
 
 **When**
 
-* the factory creates the job.
+* an `EscrowJob` is deployed with the valid job configuration.
 
 **Then**
 
-* a new escrow job is created;
-* the client, freelancer, arbitrator, token, 7-day review period, and 7-day appeal window are fixed;
-* `JobCreated` is emitted;
-* the event contains the job address, client, freelancer, arbitrator and `spec_uri`.
+* the escrow job is deployed successfully;
+* the client, freelancer, arbitrator, token and periods are fixed;
+* the job configuration is immutable after deployment.
 
----
+------
 
 ### SC-02 — Reject more than 20 milestones
 
 **Given**
 
-* a job specification containing more than 20 milestones.
+* a job configuration containing more than 20 milestones.
 
 **When**
 
-* the factory attempts to create the job.
+* an `EscrowJob` is deployed with the oversized milestone list.
 
 **Then**
 
 * the transaction reverts;
-* no job is created.
+* the invalid job is not deployed.
 
----
+------
 
 ### SC-03 — Reject zero milestone amount
 
@@ -1752,48 +1481,9 @@ The implementation must not introduce behavior that is not represented by the sp
 
 ---
 
-### SC-15 — Submit additional evidence
-
-**Given**
-
-* a milestone is `DISPUTED`;
-* caller is one of the job parties;
-* the caller has not reached the evidence cap.
-
-**When**
-
-* `submit_evidence(evidence_uri)` is called.
-
-**Then**
-
-* the evidence submission is accepted;
-* the party's evidence count increases;
-* `EvidenceSubmitted` is emitted;
-* the event actor equals the transaction sender.
-
----
-
-### SC-16 — Reject evidence after cap
-
-**Given**
-
-* a milestone is `DISPUTED`;
-* the caller has reached the per-party evidence cap.
-
-**When**
-
-* `submit_evidence()` is called again.
-
-**Then**
-
-* the transaction reverts;
-* the evidence count does not increase.
-
----
-
 # 6.3 Primary Ruling Scenarios
 
-### SC-17 — High-confidence ruling
+### SC-15 — High-confidence ruling
 
 **Given**
 
@@ -1814,7 +1504,7 @@ The implementation must not introduce behavior that is not represented by the sp
 
 ---
 
-### SC-18 — Low-confidence ruling
+### SC-16 — Low-confidence ruling
 
 **Given**
 
@@ -1835,7 +1525,7 @@ The implementation must not introduce behavior that is not represented by the sp
 
 ---
 
-### SC-19 — Confidence exactly 70
+### SC-17 — Confidence exactly 70
 
 **Given**
 
@@ -1853,7 +1543,7 @@ The implementation must not introduce behavior that is not represented by the sp
 
 ---
 
-### SC-20 — Reject ruling from non-arbitrator
+### SC-18 — Reject ruling from non-arbitrator
 
 **Given**
 
@@ -1873,7 +1563,7 @@ The implementation must not introduce behavior that is not represented by the sp
 
 # 6.4 Appeal Scenarios
 
-### SC-21 — Losing party appeals
+### SC-19 — Losing party appeals
 
 **Given**
 
@@ -1893,7 +1583,7 @@ The implementation must not introduce behavior that is not represented by the sp
 
 ---
 
-### SC-22 — Winner cannot appeal
+### SC-20 — Winner cannot appeal
 
 **Given**
 
@@ -1910,7 +1600,7 @@ The implementation must not introduce behavior that is not represented by the sp
 
 ---
 
-### SC-23 — Appeal after window
+### SC-21 — Appeal after window
 
 **Given**
 
@@ -1929,7 +1619,7 @@ The implementation must not introduce behavior that is not represented by the sp
 
 # 6.5 Secondary Review Scenarios
 
-### SC-24 — Submit secondary ruling
+### SC-22 — Submit secondary ruling
 
 **Given**
 
@@ -1948,7 +1638,7 @@ The implementation must not introduce behavior that is not represented by the sp
 
 ---
 
-### SC-25 — Reject secondary ruling from non-arbitrator
+### SC-23 — Reject secondary ruling from non-arbitrator
 
 **Given**
 
@@ -1967,7 +1657,7 @@ The implementation must not introduce behavior that is not represented by the sp
 
 # 6.6 Finalization Scenarios
 
-### SC-26 — Finalize unappealed ruling
+### SC-24 — Finalize unappealed ruling
 
 **Given**
 
@@ -1988,7 +1678,7 @@ The implementation must not introduce behavior that is not represented by the sp
 
 ---
 
-### SC-27 — Cannot finalize while appeal window is open
+### SC-25 — Cannot finalize while appeal window is open
 
 **Given**
 
@@ -2005,7 +1695,7 @@ The implementation must not introduce behavior that is not represented by the sp
 
 ---
 
-### SC-28 — Finalize after secondary ruling
+### SC-26 — Finalize after secondary ruling
 
 **Given**
 
@@ -2024,49 +1714,11 @@ The implementation must not introduce behavior that is not represented by the sp
 
 ---
 
-# 6.7 Ruling-Deadline Fallback Scenarios
-
-### SC-29 — Trigger fallback after arbitrator deadline
-
-**Given**
-
-* a milestone is `DISPUTED`;
-* no required ruling has been submitted;
-* the ruling deadline has expired.
-
-**When**
-
-* any address triggers the fallback.
-
-**Then**
-
-* the fallback executes according to the team-approved rule;
-* the dispute cannot later receive a normal ruling;
-* the appropriate fallback event is emitted.
-
----
-
-### SC-30 — Reject fallback before deadline
-
-**Given**
-
-* the ruling deadline has not expired.
-
-**When**
-
-* any address triggers the fallback.
-
-**Then**
-
-* the transaction reverts.
-
----
-
-# 6.8 Deadline Boundary Scenarios
+# 6.7 Deadline Boundary Scenarios
 
 Every deadline must be tested at all three boundary positions.
 
-### SC-31 — One second before review deadline
+### SC-27 — One second before review deadline
 
 **Given**
 
@@ -2081,7 +1733,7 @@ Every deadline must be tested at all three boundary positions.
 
 * the transaction reverts.
 
-### SC-32 — Exactly at review deadline
+### SC-28 — Exactly at review deadline
 
 **Given**
 
@@ -2096,7 +1748,7 @@ Every deadline must be tested at all three boundary positions.
 
 * the timeout claim succeeds.
 
-### SC-33 — One second after review deadline
+### SC-29 — One second after review deadline
 
 **Given**
 
@@ -2111,13 +1763,13 @@ Every deadline must be tested at all three boundary positions.
 
 * the timeout claim succeeds.
 
-The same three-point boundary test must be applied to the appeal window and ruling deadline.
+The same three-point boundary test must be applied to the appeal window .
 
 ---
 
-# 6.9 Multi-Milestone Scenarios
+# 6.8 Multi-Milestone Scenarios
 
-### SC-34 — Milestones operate independently
+### SC-30 — Milestones operate independently
 
 **Given**
 
@@ -2133,7 +1785,7 @@ The same three-point boundary test must be applied to the appeal window and ruli
 
 ---
 
-### SC-35 — Independent payout accounting
+### SC-31 — Independent payout accounting
 
 **Given**
 
@@ -2150,9 +1802,9 @@ The same three-point boundary test must be applied to the appeal window and ruli
 
 ---
 
-# 6.10 Security and Hardening Scenarios
+# 6.9 Security and Hardening Scenarios
 
-### SC-36 — Failed token transfer
+### SC-32 — Failed token transfer
 
 **Given**
 
@@ -2170,7 +1822,7 @@ The same three-point boundary test must be applied to the appeal window and ruli
 
 ---
 
-### SC-37 — Callback reentrancy attempt
+### SC-33 — Callback reentrancy attempt
 
 **Given**
 
@@ -2187,7 +1839,7 @@ The same three-point boundary test must be applied to the appeal window and ruli
 
 ---
 
-### SC-38 — Zero-address rejection
+### SC-34 — Zero-address rejection
 
 **Given**
 
@@ -2195,7 +1847,7 @@ The same three-point boundary test must be applied to the appeal window and ruli
 
 **When**
 
-* the factory attempts to create the job.
+* an `EscrowJob` is deployed with the invalid configuration.
 
 **Then**
 
@@ -2203,7 +1855,7 @@ The same three-point boundary test must be applied to the appeal window and ruli
 
 ---
 
-### SC-39 — Arbitrator conflicts with a party
+### SC-35 — Arbitrator conflicts with a party
 
 **Given**
 
@@ -2211,7 +1863,7 @@ The same three-point boundary test must be applied to the appeal window and ruli
 
 **When**
 
-* the factory attempts to create the job.
+* an `EscrowJob` is deployed with the invalid configuration.
 
 **Then**
 
@@ -2219,9 +1871,9 @@ The same three-point boundary test must be applied to the appeal window and ruli
 
 ---
 
-# 6.11 Invariant Scenario
+# 6.10 Invariant Scenario
 
-### SC-40 — Escrow balance invariant
+### SC-36 — Escrow balance invariant
 
 **Given**
 
@@ -2260,9 +1912,9 @@ The invariant must hold after:
 
 ---
 
-# 6.12 Read-View Scenarios
+# 6.11 Read-View Scenarios
 
-### SC-41 — Read milestone count
+### SC-37 — Read milestone count
 
 **Given**
 
@@ -2278,7 +1930,7 @@ The invariant must hold after:
 
 ---
 
-### SC-42 — Read complete milestone
+### SC-38 — Read complete milestone
 
 **Given**
 
@@ -2295,7 +1947,7 @@ The invariant must hold after:
 
 ---
 
-# 6.13 Existing Test Suite Integration
+# 6.12 Existing Test Suite Integration
 
 The original project contains 41 dispute and escrow test cases.
 
@@ -2305,14 +1957,14 @@ Each existing test should map to one or more `SC-*` identifiers.
 
 Additional scenarios introduced by the Phase 0 specification include:
 
-* evidence handling;
-* factory creation;
+* single-URI dispute evidence handling;
+* direct job deployment;
 * zero-address validation;
 * arbitrator conflict validation;
 * token-transfer failure;
 * callback/reentrancy hardening;
 * escrow balance invariant;
-* ruling-deadline fallback;
+
 * exact deadline boundaries;
 * read-view behavior.
 
