@@ -1,0 +1,33 @@
+# secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+keys/
+.secrets/
+
+# node
+node_modules/
+dist/
+build/
+coverage/
+*.log
+npm-debug.log*
+.vite/
+
+# python / vyper / titanoboa
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.hypothesis/
+contracts/build/
+contracts/out/
+contracts/cache/
+
+# os / editor
+.DS_Store
+Thumbs.db
+.idea/
