@@ -778,3 +778,347 @@ def test_low_confidence_cannot_finalize_without_secondary_ruling(
             0,
             sender=arbitrator
         )
+
+
+
+def test_non_client_cannot_fund_milestone(accounts, escrow):
+    freelancer = accounts["freelancer"]
+
+    with pytest.raises(Exception):
+        escrow.fund_milestone(0, sender=freelancer)
+
+
+def test_invalid_milestone_index_reverts(accounts, escrow):
+    client = accounts["client"]
+
+    with pytest.raises(Exception):
+        escrow.fund_milestone(1, sender=client)
+
+
+def test_arbitrator_cannot_approve_milestone(
+    accounts, token, escrow
+):
+    client = accounts["client"]
+    freelancer = accounts["freelancer"]
+    arbitrator = accounts["arbitrator"]
+    amount = 500_000
+
+    token.approve(escrow.address, amount, sender=client)
+    escrow.fund_milestone(0, sender=client)
+    escrow.submit_milestone(
+        0, "ipfs://proof", sender=freelancer
+    )
+
+    with pytest.raises(Exception):
+        escrow.approve_milestone(0, sender=arbitrator)
+
+
+def test_low_confidence_requires_secondary_ruling(
+    accounts, token, escrow
+):
+    client = accounts["client"]
+    freelancer = accounts["freelancer"]
+    arbitrator = accounts["arbitrator"]
+    amount = 500_000
+
+    token.approve(escrow.address, amount, sender=client)
+    escrow.fund_milestone(0, sender=client)
+    escrow.submit_milestone(
+        0, "ipfs://proof", sender=freelancer
+    )
+    escrow.raise_dispute(
+        0, "ipfs://evidence", sender=client
+    )
+
+    escrow.submit_ruling(
+        0,
+        freelancer,
+        60,
+        "ipfs://primary-ruling",
+        sender=arbitrator,
+    )
+
+    # A low-confidence ruling must not be finalized directly.
+    with pytest.raises(Exception):
+        escrow.finalize_ruling(0, sender=arbitrator)
+
+    escrow.submit_secondary_ruling(
+        0,
+        freelancer,
+        "ipfs://secondary-ruling",
+        sender=arbitrator,
+    )
+    escrow.finalize_ruling(0, sender=arbitrator)
+
+    milestone = escrow.get_milestone(0)
+    assert milestone[1] == 4  # RELEASED
+    assert token.balanceOf(freelancer) == amount
+    assert token.balanceOf(escrow.address) == 0
+
+
+def test_appeal_uses_secondary_ruling(
+    accounts, token, escrow
+):
+    client = accounts["client"]
+    freelancer = accounts["freelancer"]
+    arbitrator = accounts["arbitrator"]
+    amount = 500_000
+
+    token.approve(escrow.address, amount, sender=client)
+    escrow.fund_milestone(0, sender=client)
+    escrow.submit_milestone(
+        0, "ipfs://proof", sender=freelancer
+    )
+    escrow.raise_dispute(
+        0, "ipfs://evidence", sender=client
+    )
+
+    # High-confidence primary ruling favours freelancer.
+    escrow.submit_ruling(
+        0,
+        freelancer,
+        90,
+        "ipfs://primary-ruling",
+        sender=arbitrator,
+    )
+
+    # Appeal is still open, so direct finalization must fail.
+    with pytest.raises(Exception):
+        escrow.finalize_ruling(0, sender=arbitrator)
+
+    escrow.appeal_ruling(0, sender=client)
+
+    # Secondary ruling favours client instead.
+    escrow.submit_secondary_ruling(
+        0,
+        client,
+        "ipfs://secondary-ruling",
+        sender=arbitrator,
+    )
+    escrow.finalize_ruling(0, sender=arbitrator)
+
+    milestone = escrow.get_milestone(0)
+    assert milestone[1] == 5  # REFUNDED
+    assert token.balanceOf(client) == 1_000_000
+    assert token.balanceOf(freelancer) == 0
+    assert token.balanceOf(escrow.address) == 0
+
+
+def test_funding_fails_without_sufficient_allowance(
+    accounts, token, escrow
+):
+    client = accounts["client"]
+
+    # No approval is given to the escrow contract.
+    with pytest.raises(Exception):
+        escrow.fund_milestone(0, sender=client)
+
+    milestone = escrow.get_milestone(0)
+
+    # Failed funding must leave state and balances unchanged.
+    assert milestone[1] == 0  # PENDING
+    assert token.balanceOf(client) == 1_000_000
+    assert token.balanceOf(escrow.address) == 0
+
+def test_cannot_cancel_submitted_milestone(accounts, token, escrow):
+    client = accounts["client"]
+    freelancer = accounts["freelancer"]
+
+    token.approve(escrow.address, 500_000, sender=client)
+    escrow.fund_milestone(0, sender=client)
+    escrow.submit_milestone(0, "ipfs://proof", sender=freelancer)
+
+    with pytest.raises(Exception):
+        escrow.cancel_milestone(0, sender=client)
+
+    milestone = escrow.get_milestone(0)
+    assert milestone[1] == 2  # SUBMITTED
+
+def test_cannot_approve_after_review_deadline(accounts, token, escrow):
+    client = accounts["client"]
+    freelancer = accounts["freelancer"]
+
+    token.approve(escrow.address, 500_000, sender=client)
+    escrow.fund_milestone(0, sender=client)
+    escrow.submit_milestone(0, "ipfs://proof", sender=freelancer)
+
+    boa.env.time_travel(seconds=60)
+
+    with pytest.raises(Exception):
+        escrow.approve_milestone(0, sender=client)
+
+def test_cannot_approve_after_review_deadline(accounts, token, escrow):
+    client = accounts["client"]
+    freelancer = accounts["freelancer"]
+
+    token.approve(escrow.address, 500_000, sender=client)
+    escrow.fund_milestone(0, sender=client)
+    escrow.submit_milestone(0, "ipfs://proof", sender=freelancer)
+
+    boa.env.time_travel(seconds=60)
+
+    with pytest.raises(Exception):
+        escrow.approve_milestone(0, sender=client)
+
+def test_constructor_rejects_more_than_20_milestones(accounts, token):
+    client = accounts["client"]
+    freelancer = accounts["freelancer"]
+    arbitrator = accounts["arbitrator"]
+
+    amounts = [100] * 21
+    due_dates = [0] * 21
+
+    with pytest.raises(Exception):
+        boa.load(
+            "contracts/EscrowJob.vy",
+            client,
+            freelancer,
+            arbitrator,
+            token.address,
+            60,
+            60,
+            "ipfs://job-spec",
+            amounts,
+            due_dates,
+        )
+
+
+def test_non_arbitrator_cannot_submit_ruling(accounts, token, escrow):
+    client = accounts["client"]
+    freelancer = accounts["freelancer"]
+
+    token.approve(escrow.address, 500_000, sender=client)
+    escrow.fund_milestone(0, sender=client)
+    escrow.submit_milestone(0, "ipfs://proof", sender=freelancer)
+    escrow.raise_dispute(0, "ipfs://evidence", sender=client)
+
+    with pytest.raises(Exception):
+        escrow.submit_ruling(
+            0, freelancer, 90, "ipfs://ruling", sender=client
+        )
+
+
+def test_ruling_rejects_confidence_above_100(accounts, token, escrow):
+    client = accounts["client"]
+    freelancer = accounts["freelancer"]
+    arbitrator = accounts["arbitrator"]
+
+    token.approve(escrow.address, 500_000, sender=client)
+    escrow.fund_milestone(0, sender=client)
+    escrow.submit_milestone(0, "ipfs://proof", sender=freelancer)
+    escrow.raise_dispute(0, "ipfs://evidence", sender=client)
+
+    with pytest.raises(Exception):
+        escrow.submit_ruling(
+            0, freelancer, 101, "ipfs://ruling", sender=arbitrator
+        )
+
+
+def test_ruling_rejects_invalid_winner(accounts, token, escrow):
+    client = accounts["client"]
+    freelancer = accounts["freelancer"]
+    arbitrator = accounts["arbitrator"]
+    outsider = boa.env.generate_address("outsider")
+
+    token.approve(escrow.address, 500_000, sender=client)
+    escrow.fund_milestone(0, sender=client)
+    escrow.submit_milestone(0, "ipfs://proof", sender=freelancer)
+    escrow.raise_dispute(0, "ipfs://evidence", sender=client)
+
+    with pytest.raises(Exception):
+        escrow.submit_ruling(
+            0, outsider, 90, "ipfs://ruling", sender=arbitrator
+        )
+
+
+def test_client_cannot_raise_dispute_before_submission(accounts, token, escrow):
+    client = accounts["client"]
+
+    token.approve(escrow.address, 500_000, sender=client)
+    escrow.fund_milestone(0, sender=client)
+
+    with pytest.raises(Exception):
+        escrow.raise_dispute(0, "ipfs://evidence", sender=client)
+
+
+def test_cannot_raise_dispute_twice(accounts, token, escrow):
+    client = accounts["client"]
+    freelancer = accounts["freelancer"]
+
+    token.approve(escrow.address, 500_000, sender=client)
+    escrow.fund_milestone(0, sender=client)
+    escrow.submit_milestone(0, "ipfs://proof", sender=freelancer)
+    escrow.raise_dispute(0, "ipfs://evidence", sender=client)
+
+    with pytest.raises(Exception):
+        escrow.raise_dispute(0, "ipfs://evidence2", sender=client)
+
+
+def test_cannot_finalize_without_any_ruling(accounts, token, escrow):
+    client = accounts["client"]
+    freelancer = accounts["freelancer"]
+
+    token.approve(escrow.address, 500_000, sender=client)
+    escrow.fund_milestone(0, sender=client)
+    escrow.submit_milestone(0, "ipfs://proof", sender=freelancer)
+    escrow.raise_dispute(0, "ipfs://evidence", sender=client)
+
+    with pytest.raises(Exception):
+        escrow.finalize_ruling(0, sender=client)
+
+
+def test_cannot_approve_after_review_deadline(accounts, token, escrow):
+    client = accounts["client"]
+    freelancer = accounts["freelancer"]
+
+    token.approve(escrow.address, 500_000, sender=client)
+    escrow.fund_milestone(0, sender=client)
+    escrow.submit_milestone(0, "ipfs://proof", sender=freelancer)
+
+    boa.env.time_travel(seconds=60)
+
+    with pytest.raises(Exception):
+        escrow.approve_milestone(0, sender=client)
+
+
+def test_cannot_cancel_submitted_milestone(accounts, token, escrow):
+    client = accounts["client"]
+    freelancer = accounts["freelancer"]
+
+    token.approve(escrow.address, 500_000, sender=client)
+    escrow.fund_milestone(0, sender=client)
+    escrow.submit_milestone(0, "ipfs://proof", sender=freelancer)
+
+    with pytest.raises(Exception):
+        escrow.cancel_milestone(0, sender=client)
+
+    assert escrow.get_milestone(0)[1] == 2  # SUBMITTED
+
+
+def test_non_client_cannot_cancel_milestone(accounts, token, escrow):
+    client = accounts["client"]
+    freelancer = accounts["freelancer"]
+
+    token.approve(escrow.address, 500_000, sender=client)
+    escrow.fund_milestone(0, sender=client)
+
+    with pytest.raises(Exception):
+        escrow.cancel_milestone(0, sender=freelancer)
+
+    assert escrow.get_milestone(0)[1] == 1  # FUNDED
+
+
+def test_constructor_rejects_more_than_20_milestones(accounts, token):
+    with pytest.raises(Exception):
+        boa.load(
+            "contracts/EscrowJob.vy",
+            accounts["client"],
+            accounts["freelancer"],
+            accounts["arbitrator"],
+            token.address,
+            60,
+            60,
+            "ipfs://job-spec",
+            [100] * 21,
+            [0] * 21,
+        )
